@@ -5,7 +5,7 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 
 # ======================= CONFIG =======================
 MODEL_DIR = "model"
-MODEL_DRIVE_ID = "1miyNR7k89konH7_du1ORIhs8ZF8OniGv"
+MODEL_DRIVE_ID = "15nCBxXFqMqr6YrvSn9FXhR_foBHcawMh"
 SAFETENSORS_FILE = "model.safetensors"
 
 # Files that must be present in model directory beforehand
