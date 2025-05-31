@@ -122,7 +122,7 @@ def load_model():
     """Load the accent detection model"""
     download_model_from_drive()
     
-    required_files = ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']
+    required_files = ['config.json', 'preprocessor_config.json',tokenizer_config.json,vocab.json]
     if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
         raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
     
