@@ -13,9 +13,9 @@ import torch
 from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 
 # =========================== CONFIG ===========================
-MODEL_DRIVE_ID = "1yUDvAj8wab5XCozpaj6nZwT9r4HuVryp"
+MODEL_DRIVE_ID = "19uA2hRO3aWUheXsQxXrda38QjKMCTiW1"
 MODEL_ZIP_NAME = "model.zip"
-MODEL_DIR = "./local_model"
+MODEL_DIR = "./"
 TARGET_SR = 16000
 ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
 CHUNK_SIZE = 8192
@@ -97,48 +97,95 @@ def extract_audio(input_path: str, output_path: str) -> str:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
 
 # ====================== MODEL HANDLING =======================
-def download_model_folder():
-    """Download folder directly from Google Drive"""
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        
-        # Use gdown folder download (requires folder ID)
-        folder_id = "YOUR_GOOGLE_DRIVE_FOLDER_ID"
-        os.system(f"gdown --folder https://drive.google.com/drive/folders/{folder_id} -O {MODEL_DIR}")
-        
-@st.cache_resource 
-def load_model():
-    download_model_folder() 
-    """Load model directly from folder"""
+def download_model_from_drive():
+    """Download and extract model from Google Drive with nested folder handling"""
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    
     required_files = {
         'config.json',
-        'preprocessor_config.json',
+        'preprocessor_config.json', 
         'pytorch_model_quantized.pt',
         'vocab.json',
         'tokenizer_config.json'
     }
     
-    # Verify files exist
-    missing_files = [f for f in required_files if not os.path.exists(os.path.join(MODEL_DIR, f))]
-    if missing_files:
-        st.error(f"❌ Missing files: {missing_files}")
-        st.error(f"Available files: {os.listdir(MODEL_DIR)}")
-        st.stop()
+    # Skip if all files already exist
+    if all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
+        return
     
     try:
+        # Download zip file
+        url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
+        gdown.download(url, MODEL_ZIP_NAME, quiet=False)
+        
+        # Extract files from the 'model' subdirectory
+        with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
+            # First find the model subdirectory
+            model_subdir = None
+            for name in zip_ref.namelist():
+                if 'model/' in name and not name.startswith('__MACOSX'):
+                    model_subdir = name.split('model/')[0] + 'model/'
+                    break
+            
+            if not model_subdir:
+                raise AudioExtractionError("Could not find 'model' subdirectory in zip file")
+            
+            # Extract only the files from the model subdirectory
+            for file in zip_ref.namelist():
+                if file.startswith(model_subdir) and not '__MACOSX' in file:
+                    # Remove the subdirectory prefix when extracting
+                    dest_path = os.path.join(MODEL_DIR, file[len(model_subdir):])
+                    with zip_ref.open(file) as source, open(dest_path, 'wb') as target:
+                        target.write(source.read())
+        
+        # Verify all required files were extracted
+        existing_files = set(os.listdir(MODEL_DIR))
+        missing_files = required_files - existing_files
+        if missing_files:
+            raise AudioExtractionError(
+                f"Missing required files: {missing_files}\n"
+                f"Found files: {existing_files}"
+            )
+            
+    except Exception as e:
+        raise AudioExtractionError(f"Model setup failed: {str(e)}")
+    finally:
+        if os.path.exists(MODEL_ZIP_NAME):
+            os.remove(MODEL_ZIP_NAME)
+
+@st.cache_resource 
+def load_model():
+    """Load model with clear error reporting"""
+    try:
+        download_model_from_drive()
+        
+        # Verify quantized model exists
+        model_path = os.path.join(MODEL_DIR, 'pytorch_model_quantized.pt')
+        if not os.path.exists(model_path):
+            available_files = "\n- ".join(os.listdir(MODEL_DIR))
+            raise FileNotFoundError(
+                f"Quantized model not found at {model_path}\n"
+                f"Files in directory:\n- {available_files}"
+            )
+            
         # Load processor and config
         processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
         
         # Load quantized model
         model = Wav2Vec2ForSequenceClassification.from_pretrained(
             MODEL_DIR,
-            state_dict=torch.load(os.path.join(MODEL_DIR, 'pytorch_model_quantized.pt'), map_location='cpu')
+            state_dict=torch.load(model_path, map_location='cpu')
         )
         model.eval()
         return processor, model
         
     except Exception as e:
-        st.error(f"❌ Model loading failed: {str(e)}")
+        st.error("❌ Failed to load model")
+        st.error(f"Error: {str(e)}")
+        st.error("Please verify the zip file contains a 'model' folder with:")
+        st.error("- config.json\n- preprocessor_config.json")
+        st.error("- pytorch_model_quantized.pt\n- vocab.json")
+        st.error("- tokenizer_config.json")
         st.stop()
 
 def detect_accent(audio_path: str):
