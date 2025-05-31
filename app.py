@@ -15,7 +15,7 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 # =========================== CONFIG ===========================
 MODEL_DRIVE_ID = "19uA2hRO3aWUheXsQxXrda38QjKMCTiW1"
 MODEL_ZIP_NAME = "model.zip"
-MODEL_DIR = "./"
+MODEL_DIR = "./local_model"
 TARGET_SR = 16000
 ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
 CHUNK_SIZE = 8192
