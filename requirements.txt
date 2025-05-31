@@ -3,7 +3,7 @@ torch
 torchaudio
 transformers
 moviepy
-pydub
+AudioSegment
 yt-dlp
 requests
 gdown
