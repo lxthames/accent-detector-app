@@ -1,14 +1,10 @@
 import os
-import time
-import requests
 import tempfile
 import streamlit as st
 from urllib.parse import urlparse
 from typing import Optional
 import gdown
 import zipfile
-import librosa
-import soundfile as sf
 import yt_dlp
 import torchaudio
 import torch
@@ -43,111 +39,51 @@ def is_youtube_url(url: str) -> bool:
     except Exception:
         return False
 
-def get_file_extension(url: str) -> str:
-    try:
-        return os.path.splitext(url.split('?')[0].split('#')[0])[1].lower()
-    except IndexError:
-        return ''
-
-def download_youtube_video(url: str, output_path: str) -> str:
+def download_youtube_audio(url: str, output_path: str) -> str:
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': output_path,
         'quiet': True,
-        'no_warnings': True,
-        'retries': 3,
-        'extract_audio': True,
-        'audio_format': 'wav',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'wav',
+        }],
+        'retries': 3
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info)
+        return ydl.prepare_filename(info).replace('.webm', '.wav').replace('.mp4', '.wav')
 
-def download_direct_video(url: str, output_path: str) -> str:
-    ext = get_file_extension(url)
-    if ext not in ALLOWED_VIDEO_FORMATS:
-        raise AudioExtractionError(f"Unsupported format '{ext}'. Allowed: {ALLOWED_VIDEO_FORMATS}")
-    with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
-        response.raise_for_status()
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                f.write(chunk)
-    return output_path
-
-import os
-import warnings
-import tempfile
-import streamlit as st
-from typing import Optional
-import librosa
-import soundfile as sf
-import torchaudio
-import torch
-from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
-
-# ======================= AUDIO CONFIGURATION =======================
-# Configure audio backends and suppress warnings
-warnings.filterwarnings("ignore", category=UserWarning, message="PySoundFile failed")
-os.environ["LIBROSA_CACHE_DIR"] = os.path.join(tempfile.gettempdir(), "librosa_cache")
-os.environ["SOUNDFILE_ALLOWED_EXTENSIONS"] = ".wav,.flac,.ogg"
-
-# ======================= AUDIO CONVERSION =======================
-def convert_to_wav(input_path: str, output_path: str) -> str:
-    """Robust audio conversion with prioritized backends"""
+def convert_with_torchaudio(input_path: str, output_path: str) -> str:
+    """Primary conversion using torchaudio"""
     try:
-        # Attempt 1: Try direct soundfile load if WAV/FLAC
-        if input_path.lower().endswith(('.wav', '.flac')):
-            try:
-                y, sr = sf.read(input_path)
-                y = librosa.to_mono(y.T) if y.ndim > 1 else y
-                y = librosa.resample(y, orig_sr=sr, target_sr=TARGET_SR)
-                sf.write(output_path, y, TARGET_SR)
-                return output_path
-            except Exception:
-                pass
-
-        # Attempt 2: Use torchaudio's native loader
-        try:
-            waveform, sr = torchaudio.load(input_path)
-            if sr != TARGET_SR:
-                waveform = torchaudio.transforms.Resample(sr, TARGET_SR)(waveform)
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            torchaudio.save(output_path, waveform, TARGET_SR)
-            return output_path
-        except Exception:
-            pass
-
-        # Attempt 3: Librosa with explicit backend selection
-        try:
-            y, sr = librosa.load(
-                input_path,
-                sr=TARGET_SR,
-                mono=True,
-                res_type='kaiser_fast',
-                dtype='float32'
-            )
-            sf.write(output_path, y, TARGET_SR)
-            return output_path
-        except Exception as e:
-            raise AudioExtractionError(f"All conversion methods failed: {str(e)}")
-
+        waveform, sr = torchaudio.load(input_path)
+        if sr != TARGET_SR:
+            resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
+            waveform = resampler(waveform)
+        if waveform.shape[0] > 1:  # Convert to mono if stereo
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        torchaudio.save(output_path, waveform, TARGET_SR)
+        return output_path
     except Exception as e:
-        raise AudioExtractionError(f"Audio conversion error: {str(e)}")
-                    
-    except Exception as e:
-        raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
+        raise AudioExtractionError(f"Torchaudio conversion failed: {str(e)}")
+
 def extract_audio_to_wav(input_path: str, output_path: str) -> str:
-    """Universal audio extraction that handles both local and remote files"""
+    """Universal audio extraction"""
     try:
         if input_path.startswith(('http://', 'https://')):
-            # Handle online videos
-            temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
-            download_with_retry(input_path, temp_video, is_youtube_url(input_path))
-            return convert_to_wav(temp_video, output_path)
+            if is_youtube_url(input_path):
+                return download_youtube_audio(input_path, output_path)
+            else:
+                temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
+                with requests.get(input_path, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
+                    r.raise_for_status()
+                    with open(temp_video, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                            f.write(chunk)
+                return convert_with_torchaudio(temp_video, output_path)
         else:
-            # Handle local files
-            return convert_to_wav(input_path, output_path)
+            return convert_with_torchaudio(input_path, output_path)
     except Exception as e:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
 
