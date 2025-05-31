@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+import requests
 import streamlit as st
 from urllib.parse import urlparse
 from typing import Optional
@@ -15,9 +16,9 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 MODEL_DRIVE_ID = "19uA2hRO3aWUheXsQxXrda38QjKMCTiW1"
 MODEL_ZIP_NAME = "model.zip"
 MODEL_DIR = "./local_model"
-TARGET_SR = 16000
+TARGET_SR = 16000  # Target sample rate (16kHz)
 ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
-CHUNK_SIZE = 8192
+CHUNK_SIZE = 8192  # For streaming downloads
 MAX_RETRIES = 3
 DOWNLOAD_TIMEOUT = 30
 
@@ -32,6 +33,7 @@ class AudioExtractionError(Exception):
     pass
 
 def is_youtube_url(url: str) -> bool:
+    """Check if URL is from YouTube"""
     try:
         parsed = urlparse(url)
         return any(domain in parsed.netloc for domain in {
@@ -41,18 +43,21 @@ def is_youtube_url(url: str) -> bool:
         return False
 
 def install_ffmpeg():
-    """Install ffmpeg if not available"""
+    """Ensure FFmpeg is installed in the environment"""
     try:
-        subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True)
-    except:
+        # Check if ffmpeg exists
+        subprocess.run(['ffmpeg', '-version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (subprocess.CalledProcessError, FileNotFoundError):
         try:
+            # Install ffmpeg if missing
             subprocess.run(['apt-get', 'update'], check=True)
             subprocess.run(['apt-get', 'install', '-y', 'ffmpeg'], check=True)
+            st.success("FFmpeg installed successfully")
         except Exception as e:
-            raise AudioExtractionError(f"Failed to install ffmpeg: {str(e)}")
+            raise AudioExtractionError(f"Failed to install FFmpeg: {str(e)}")
 
 def download_youtube_audio(url: str, output_path: str) -> str:
-    """Download YouTube audio using yt-dlp with ffmpeg fallback"""
+    """Download audio from YouTube using yt-dlp with FFmpeg"""
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -60,9 +65,11 @@ def download_youtube_audio(url: str, output_path: str) -> str:
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
+                'preferredquality': '192',
             }],
             'quiet': True,
-            'ffmpeg_location': '/usr/bin/ffmpeg'
+            'ffmpeg_location': '/usr/bin/ffmpeg',
+            'retries': 3
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -70,40 +77,62 @@ def download_youtube_audio(url: str, output_path: str) -> str:
     except Exception as e:
         raise AudioExtractionError(f"YouTube download failed: {str(e)}")
 
-def convert_with_torchaudio(input_path: str, output_path: str) -> str:
-    """Convert any audio to WAV using torchaudio"""
+def download_direct_video(url: str, output_path: str) -> str:
+    """Download video from direct URL"""
     try:
+        with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
+            response.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+                    f.write(chunk)
+        return output_path
+    except Exception as e:
+        raise AudioExtractionError(f"Video download failed: {str(e)}")
+
+def convert_with_torchaudio(input_path: str, output_path: str) -> str:
+    """Convert any audio file to WAV format using torchaudio"""
+    try:
+        # Load audio file
         waveform, sr = torchaudio.load(input_path)
+        
+        # Resample if needed
         if sr != TARGET_SR:
             resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
             waveform = resampler(waveform)
-        if waveform.shape[0] > 1:  # Convert to mono
+        
+        # Convert to mono if stereo
+        if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        # Save as WAV
         torchaudio.save(output_path, waveform, TARGET_SR)
         return output_path
     except Exception as e:
         raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
 
 def extract_audio(input_path: str, output_path: str) -> str:
-    """Main audio extraction function"""
+    """Main function to handle all audio extraction scenarios"""
     try:
-        if input_path.startswith(('http://', 'https://')):
-            if is_youtube_url(input_path):
-                return download_youtube_audio(input_path, output_path)
-            else:
-                temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
-                with requests.get(input_path, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
-                    r.raise_for_status()
-                    with open(temp_video, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
-                            f.write(chunk)
-                return convert_with_torchaudio(temp_video, output_path)
+        # Handle YouTube URLs
+        if input_path.startswith(('http://', 'https://')) and is_youtube_url(input_path):
+            return download_youtube_audio(input_path, output_path)
+        
+        # Handle direct video URLs
+        elif input_path.startswith(('http://', 'https://')):
+            temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
+            download_direct_video(input_path, temp_video)
+            return convert_with_torchaudio(temp_video, output_path)
+        
+        # Handle local files
         else:
             return convert_with_torchaudio(input_path, output_path)
+            
     except Exception as e:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
- # ====================== MODEL HANDLING =======================More actions
+
+# ====================== MODEL HANDLING =======================
 def download_model_from_drive():
+    """Download and extract model from Google Drive"""
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR, exist_ok=True)
         try:
@@ -117,65 +146,106 @@ def download_model_from_drive():
 
 @st.cache_resource
 def load_model():
+    """Load the accent detection model"""
     download_model_from_drive()
+    
+    # Verify all required files exist
     required_files = ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']
     if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
         raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
     
+    # Load processor and model
     processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
     model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
     model.eval()
     return processor, model
 
 def detect_accent(audio_path: str):
+    """Run accent detection on audio file"""
     processor, model = load_model()
+    
+    # Load and preprocess audio
     waveform, sr = torchaudio.load(audio_path)
     if sr != TARGET_SR:
         waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
+    
+    # Get model predictions
     inputs = processor(waveform.squeeze(), sampling_rate=TARGET_SR, return_tensors="pt")
     with torch.no_grad():
         logits = model(**inputs).logits
         probs = torch.softmax(logits, dim=1)
+    
+    # Return results
     pred_id = torch.argmax(probs).item()
     confidence = float(probs[0, pred_id]) * 100
     label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
     return label, round(confidence, 2)
+
 # ====================== STREAMLIT UI ============================
-st.set_page_config(page_title="Accent Detection", layout="centered")
-st.title("🗣️ Accent Detection from Speech")
+def main():
+    st.set_page_config(page_title="Accent Detection", layout="centered")
+    st.title("🗣️ Accent Detection from Speech")
+    st.markdown("Upload a video/audio file or enter a YouTube URL to detect the speaker's accent.")
 
-with st.spinner("🔍 Checking for model files..."):
-    try:
-        download_model_from_drive()
-    except Exception as e:
-        st.error(f"Model initialization failed: {str(e)}")
-        st.stop()
+    # Initialize FFmpeg
+    with st.spinner("Setting up audio processing..."):
+        try:
+            install_ffmpeg()
+        except Exception as e:
+            st.error(f"Initialization failed: {str(e)}")
+            st.stop()
 
-video_url = st.text_input("🔗 Enter a video URL (YouTube, Loom, etc.):")
-uploaded_file = st.file_uploader("📂 Or upload a video/audio file", type=["mp4", "mov", "mkv", "webm", "mp3", "wav"])
+    # Check model files
+    with st.spinner("Checking model files..."):
+        try:
+            download_model_from_drive()
+        except Exception as e:
+            st.error(f"Model initialization failed: {str(e)}")
+            st.stop()
 
-if st.button("🔍 Detect Accent"):
-    if not video_url and not uploaded_file:
-        st.warning("Please provide a URL or upload a file.")
-    else:
-        with st.spinner("⏳ Processing..."):
-            try:
-                with tempfile.TemporaryDirectory() as tmp:
-                    output_wav = os.path.join(tmp, "output.wav")
-                    
-                    if video_url:
-                        extract_audio_to_wav(video_url, output_wav)
-                    else:
-                        temp_input = os.path.join(tmp, uploaded_file.name)
-                        with open(temp_input, "wb") as f:
-                            f.write(uploaded_file.read())
-                        extract_audio_to_wav(temp_input, output_wav)
+    # Input options
+    video_url = st.text_input("🔗 Enter a video URL (YouTube or direct link):")
+    uploaded_file = st.file_uploader("📂 Or upload a video/audio file", 
+                                   type=["mp4", "mov", "mkv", "webm", "mp3", "wav"])
 
-                    accent, confidence = detect_accent(output_wav)
-                    
-                    st.success(f"✅ Detected accent: {accent} (Confidence: {confidence:.2f}%)")
-                    
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+    if st.button("🔍 Detect Accent"):
+        if not video_url and not uploaded_file:
+            st.warning("Please provide a URL or upload a file.")
+        else:
+            with st.spinner("Processing..."):
+                try:
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        output_wav = os.path.join(tmp_dir, "output.wav")
+                        
+                        if video_url:
+                            extract_audio(video_url, output_wav)
+                        else:
+                            temp_input = os.path.join(tmp_dir, uploaded_file.name)
+                            with open(temp_input, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
+                            extract_audio(temp_input, output_wav)
+
+                        accent, confidence = detect_accent(output_wav)
+                        
+                        # Display results
+                        st.success("✅ Analysis complete!")
+                        st.markdown(f"### Detected accent: **{accent}**")
+                        st.markdown(f"**Confidence**: {confidence:.2f}%")
+                        
+                        # Add interpretation
+                        if confidence > 85:
+                            st.info("High confidence in this prediction")
+                        elif confidence > 60:
+                            st.info("Moderate confidence in this prediction")
+                        else:
+                            st.warning("Low confidence - results may be less accurate")
+
+                except AudioExtractionError as e:
+                    st.error(f"⚠️ Audio processing error: {str(e)}")
+                except Exception as e:
+                    st.error(f"❌ Unexpected error: {str(e)}")
+
+if __name__ == "__main__":
+    main()
