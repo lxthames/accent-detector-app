@@ -46,7 +46,7 @@ def download_youtube_audio(url: str, output_path: str) -> str:
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': output_path.replace('.wav', ''),
+            'outtmpl': output_path.replace('.wav', ''),  # yt-dlp adds .wav by FFmpegExtractAudio
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
@@ -60,7 +60,13 @@ def download_youtube_audio(url: str, output_path: str) -> str:
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        return output_path
+        
+        # yt-dlp saves as output_path without extension + ".wav"
+        downloaded_file = output_path.replace('.wav', '') + ".wav"
+        if os.path.exists(downloaded_file):
+            return downloaded_file
+        else:
+            raise AudioExtractionError("YouTube audio download: output file not found")
     except Exception as e:
         raise AudioExtractionError(f"YouTube download failed: {str(e)}")
 
@@ -97,6 +103,12 @@ def extract_audio(input_path: str, output_path: str) -> str:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
 
 # ====================== MODEL HANDLING =======================
+def print_model_dir_files():
+    print(f"Files in {MODEL_DIR}:")
+    for root, dirs, files in os.walk(MODEL_DIR):
+        for file in files:
+            print(f"- {file}")
+
 def download_model_from_drive():
     """Download and extract model files from Google Drive, flattening any subfolder structure."""
     os.makedirs(MODEL_DIR, exist_ok=True)
@@ -104,13 +116,14 @@ def download_model_from_drive():
     required_files = {
         'config.json',
         'preprocessor_config.json',
-        'model.safetensors',
+        'model.safetensors',    # Make sure your model file matches this name or update here
         'vocab.json',
         'tokenizer_config.json'
     }
 
     if all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
         print("✅ All model files already exist.")
+        print_model_dir_files()
         return
 
     try:
@@ -134,6 +147,8 @@ def download_model_from_drive():
             if missing:
                 raise AudioExtractionError(f"❌ Missing required model files after extraction: {missing}")
 
+        print_model_dir_files()
+
     except Exception as e:
         raise AudioExtractionError(f"❌ Failed to download or extract model: {str(e)}")
 
@@ -142,12 +157,9 @@ def download_model_from_drive():
             os.remove(MODEL_ZIP_NAME)
 
 
-
-
-
-@st.cache_resource 
+@st.cache_resource
 def load_model():
-    processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
+    processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR, local_files_only=True)
     model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR, local_files_only=True)
     model.eval()
     return processor, model
@@ -174,9 +186,21 @@ def main():
     st.set_page_config(page_title="Accent Detection", layout="centered")
     st.title("🗣️ Accent Detection from Speech")
     
+    # Download model files before loading
+    with st.spinner("Downloading and preparing model..."):
+        try:
+            download_model_from_drive()
+        except AudioExtractionError as e:
+            st.error(f"❌ Model preparation error: {str(e)}")
+            return
+
     # Initialize model early to catch errors
     with st.spinner("Initializing model..."):
-        processor, model = load_model()
+        try:
+            processor, model = load_model()
+        except Exception as e:
+            st.error(f"❌ Model loading error: {str(e)}")
+            return
 
     st.markdown("Upload a video/audio file or enter a YouTube URL")
 
