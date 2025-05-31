@@ -97,7 +97,7 @@ def convert_to_wav(input_path: str, output_path: str) -> str:
 
 def extract_audio_to_wav(video_path: str, wav_output_path: str) -> str:
     # Extract audio using moviepy
-    clip = mp.VideoFileClip(video_path)
+    clip = moviepy.VideoFileClip(video_path)
     clip.audio.write_audiofile(wav_output_path, verbose=False, logger=None)
     clip.close()
     return wav_output_path
