@@ -64,7 +64,6 @@ def list_model_files():
         size_kb = os.path.getsize(path) / 1024
         st.write(f"• `{f}` — {size_kb:.1f} KB")
 
-@st.cache_resource
 def load_model():
     try:
         processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
@@ -78,13 +77,13 @@ def load_model():
 
 def detect_accent(audio_bytes, processor, model):
     try:
-        # Load audio from bytes
+        # Save audio temporarily
         with open("temp_input.wav", "wb") as f:
             f.write(audio_bytes)
 
         waveform, sr = torchaudio.load("temp_input.wav")
 
-        # Resample if needed
+        # Resample
         if sr != TARGET_SR:
             waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
 
@@ -109,31 +108,45 @@ def main():
     st.set_page_config(page_title="Accent Detection", layout="centered")
     st.title("🗣️ Accent Detection from Audio")
 
+    # Session state initialization
+    if 'model_loaded' not in st.session_state:
+        st.session_state.model_loaded = False
+        st.session_state.processor = None
+        st.session_state.model = None
+
     if st.button("⬇️ Download `model.safetensors`"):
         download_safetensors()
 
     if st.button("📁 List files in `model/` directory"):
         list_model_files()
 
-    processor = model = None
     if st.button("🚀 Load Model"):
         processor, model = load_model()
+        if processor and model:
+            st.session_state.model_loaded = True
+            st.session_state.processor = processor
+            st.session_state.model = model
 
     st.markdown("---")
     st.markdown("### 🎧 Upload Audio File")
     audio_file = st.file_uploader("Choose a WAV file", type=["wav"])
 
-    if audio_file and processor and model:
+    if audio_file:
         st.audio(audio_file, format="audio/wav")
 
-        if st.button("🔍 Detect Accent"):
-            with st.spinner("Processing..."):
-                label, confidence = detect_accent(audio_file.read(), processor, model)
-                if label:
-                    st.success(f"### Accent: **{label}**")
-                    st.markdown(f"**Confidence:** {confidence:.2f}%")
-    elif audio_file:
-        st.warning("Please load the model first!")
+        if st.session_state.model_loaded:
+            if st.button("🔍 Detect Accent"):
+                with st.spinner("Processing..."):
+                    label, confidence = detect_accent(
+                        audio_file.read(),
+                        st.session_state.processor,
+                        st.session_state.model
+                    )
+                    if label:
+                        st.success(f"### Accent: **{label}**")
+                        st.markdown(f"**Confidence:** {confidence:.2f}%")
+        else:
+            st.warning("⚠️ Please load the model first.")
 
 if __name__ == "__main__":
     main()
