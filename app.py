@@ -74,36 +74,66 @@ def download_direct_video(url: str, output_path: str) -> str:
                 f.write(chunk)
     return output_path
 
+import os
+import warnings
+import tempfile
+import streamlit as st
+from typing import Optional
+import librosa
+import soundfile as sf
+import torchaudio
+import torch
+from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
+
+# ======================= AUDIO CONFIGURATION =======================
+# Configure audio backends and suppress warnings
+warnings.filterwarnings("ignore", category=UserWarning, message="PySoundFile failed")
+os.environ["LIBROSA_CACHE_DIR"] = os.path.join(tempfile.gettempdir(), "librosa_cache")
+os.environ["SOUNDFILE_ALLOWED_EXTENSIONS"] = ".wav,.flac,.ogg"
+
+# ======================= AUDIO CONVERSION =======================
 def convert_to_wav(input_path: str, output_path: str) -> str:
-    """Robust audio conversion with proper error handling"""
+    """Robust audio conversion with prioritized backends"""
     try:
-        # Try with librosa using soundfile first
+        # Attempt 1: Try direct soundfile load if WAV/FLAC
+        if input_path.lower().endswith(('.wav', '.flac')):
+            try:
+                y, sr = sf.read(input_path)
+                y = librosa.to_mono(y.T) if y.ndim > 1 else y
+                y = librosa.resample(y, orig_sr=sr, target_sr=TARGET_SR)
+                sf.write(output_path, y, TARGET_SR)
+                return output_path
+            except Exception:
+                pass
+
+        # Attempt 2: Use torchaudio's native loader
         try:
-            y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True)
+            waveform, sr = torchaudio.load(input_path)
+            if sr != TARGET_SR:
+                waveform = torchaudio.transforms.Resample(sr, TARGET_SR)(waveform)
+            if waveform.shape[0] > 1:
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            torchaudio.save(output_path, waveform, TARGET_SR)
+            return output_path
+        except Exception:
+            pass
+
+        # Attempt 3: Librosa with explicit backend selection
+        try:
+            y, sr = librosa.load(
+                input_path,
+                sr=TARGET_SR,
+                mono=True,
+                res_type='kaiser_fast',
+                dtype='float32'
+            )
             sf.write(output_path, y, TARGET_SR)
             return output_path
         except Exception as e:
-            st.warning(f"Primary conversion failed, trying fallback methods: {str(e)}")
-            
-            # Fallback 1: Try with librosa using audioread explicitly
-            try:
-                y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True, res_type='kaiser_fast')
-                sf.write(output_path, y, TARGET_SR)
-                return output_path
-            except Exception as e:
-                st.warning(f"Audioread fallback failed: {str(e)}")
-                
-                # Fallback 2: Use torchaudio as final resort
-                try:
-                    waveform, sr = torchaudio.load(input_path)
-                    if sr != TARGET_SR:
-                        waveform = torchaudio.transforms.Resample(sr, TARGET_SR)(waveform)
-                    if waveform.shape[0] > 1:  # Convert to mono if stereo
-                        waveform = torch.mean(waveform, dim=0, keepdim=True)
-                    torchaudio.save(output_path, waveform, TARGET_SR)
-                    return output_path
-                except Exception as e:
-                    raise AudioExtractionError(f"All conversion methods failed. Last error: {str(e)}")
+            raise AudioExtractionError(f"All conversion methods failed: {str(e)}")
+
+    except Exception as e:
+        raise AudioExtractionError(f"Audio conversion error: {str(e)}")
                     
     except Exception as e:
         raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
