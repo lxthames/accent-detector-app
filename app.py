@@ -10,7 +10,7 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 import yt_dlp
 
 # =========================== CONFIG ===========================
-MODEL_DRIVE_ID = "15nCBxXFqMqr6YrvSn9FXhR_foBHcawMh"  # Only for model.safetensors
+MODEL_DRIVE_ID = "1miyNR7k89konH7_du1ORIhs8ZF8OniGv"  # Only for model.safetensors
 MODEL_DIR = "./model"
 SAFETENSORS_FILE = "model.safetensors"
 TARGET_SR = 16000
@@ -185,6 +185,14 @@ def main():
                     st.error(f"⚠️ Processing error: {str(e)}")
                 except Exception as e:
                     st.error(f"❌ Unexpected error: {str(e)}")
+
+    # ✅ List all files in the model directory
+    st.markdown("### 📁 Model Directory Contents:")
+    try:
+        files = os.listdir(MODEL_DIR)
+        st.code("\n".join(files))
+    except Exception as e:
+        st.error(f"Could not list model directory contents: {e}")
 
 if __name__ == "__main__":
     main()
