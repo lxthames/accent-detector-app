@@ -13,7 +13,7 @@ import torch
 from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 
 # =========================== CONFIG ===========================
-MODEL_DRIVE_ID = "19uA2hRO3aWUheXsQxXrda38QjKMCTiW1"
+MODEL_DRIVE_ID = "1miyNR7k89konH7_du1ORIhs8ZF8OniGv"
 MODEL_ZIP_NAME = "model.zip"
 MODEL_DIR = "./local_model"
 TARGET_SR = 16000
