@@ -120,6 +120,9 @@ def download_model_from_drive():
         
         # Extract files from the 'model' subdirectory
         with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
+             for name in zip_ref.namelist():
+                  print("Found in zip:", name)
+                
             # First find the model subdirectory
             model_subdir = None
             for name in zip_ref.namelist():
