@@ -75,30 +75,38 @@ def download_direct_video(url: str, output_path: str) -> str:
     return output_path
 
 def convert_to_wav(input_path: str, output_path: str) -> str:
+    """Robust audio conversion with multiple fallbacks"""
     try:
+        # First try librosa (works for most formats)
         y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True)
         sf.write(output_path, y, TARGET_SR)
         return output_path
-    except Exception as e:
-        raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
+    except Exception as librosa_error:
+        try:
+            # Fallback to torchaudio if librosa fails
+            waveform, sr = torchaudio.load(input_path)
+            if sr != TARGET_SR:
+                resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
+                waveform = resampler(waveform)
+            if waveform.shape[0] > 1:  # Convert to mono if stereo
+                waveform = torch.mean(waveform, dim=0, keepdim=True)
+            torchaudio.save(output_path, waveform, TARGET_SR)
+            return output_path
+        except Exception as torch_error:
+            raise AudioExtractionError(
+                f"All conversion attempts failed:\n"
+                f"Librosa error: {str(librosa_error)}\n"
+                f"Torchaudio error: {str(torch_error)}"
+            )
 
 def extract_audio_to_wav(input_path: str, output_path: str) -> str:
-    """Universal audio extraction that works for both local files and YouTube URLs"""
+    """Universal audio extraction that handles both local and remote files"""
     try:
         if input_path.startswith(('http://', 'https://')):
             # Handle online videos
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': output_path.replace('.wav', ''),
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'wav',
-                }],
-                'quiet': True
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([input_path])
-            return output_path
+            temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
+            download_with_retry(input_path, temp_video, is_youtube_url(input_path))
+            return convert_to_wav(temp_video, output_path)
         else:
             # Handle local files
             return convert_to_wav(input_path, output_path)
