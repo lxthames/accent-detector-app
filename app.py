@@ -20,8 +20,8 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 
 # Google Drive model file info (replace with your actual file)
 MODEL_DRIVE_ID = "19uA2hRO3aWUheXsQxXrda38QjKMCTiW1"  # Replace with your file ID
-MODEL_ZIP_NAME = "accent_model.zip"  # Name for downloaded zip file
-MODEL_DIR = "./local_accent_model"  # Local directory for model files
+MODEL_ZIP_NAME = "model.zip"  # Name for downloaded zip file
+MODEL_DIR = "./local_model"  # Local directory for model files
 
 TARGET_SR = 16000
 ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
