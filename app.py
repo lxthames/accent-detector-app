@@ -96,11 +96,24 @@ def convert_to_wav(input_path: str, output_path: str) -> str:
     return output_path
 
 def extract_audio_to_wav(video_path: str, wav_output_path: str) -> str:
-    # Extract audio using moviepy
-    clip = moviepy.VideoFileClip(video_path)
-    clip.audio.write_audiofile(wav_output_path, verbose=False, logger=None)
-    clip.close()
-    return wav_output_path
+    """More reliable audio extraction using yt-dlp"""
+    try:
+        # Use yt-dlp for extraction (works for both local files and streams)
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': wav_output_path,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'wav',
+                'preferredquality': '192',
+            }],
+            'quiet': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f'file:{video_path}'])  # Note the file: prefix for local files
+        return wav_output_path.replace('.webm', '.wav').replace('.mp4', '.wav')
+    except Exception as e:
+        raise AudioExtractionError(f"Failed to extract audio: {str(e)}")
 
 def extract_audio_from_video_url(video_url: str, wav_output_path: str, temp_dir: Optional[str] = None) -> str:
     if not wav_output_path.lower().endswith('.wav'):
