@@ -1,0 +1,12 @@
+streamlit
+torch
+torchaudio
+transformers
+moviepy
+pydub
+yt-dlp
+requests
+gdown
+numpy
+soundfile
+safetensors
