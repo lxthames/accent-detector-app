@@ -5,6 +5,8 @@ import tempfile
 import streamlit as st
 from urllib.parse import urlparse
 from typing import Optional
+import gdown  # Added for Google Drive download
+import zipfile  # Added for extracting zipped models
 
 from moviepy.editor import VideoFileClip
 from pydub import AudioSegment
@@ -16,7 +18,11 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 
 # =========================== CONFIG ===========================
 
-MODEL_DIR = "/content/local_accent_model"
+# Google Drive model file info (replace with your actual file)
+MODEL_DRIVE_ID = "YOUR_GOOGLE_DRIVE_FILE_ID"  # Replace with your file ID
+MODEL_ZIP_NAME = "accent_model.zip"  # Name for downloaded zip file
+MODEL_DIR = "./local_accent_model"  # Local directory for model files
+
 TARGET_SR = 16000
 ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
 CHUNK_SIZE = 8192
@@ -110,12 +116,44 @@ def extract_audio_from_video_url(video_url: str, wav_output_path: str, temp_dir:
     downloaded_path = download_with_retry(video_url, temp_video_path, is_yt)
     return extract_audio_to_wav(downloaded_path, wav_output_path)
 
-# ====================== MODEL + PREDICTION =======================
+# ====================== MODEL HANDLING =======================
+
+def download_model_from_drive():
+    """Download model from Google Drive if not already present"""
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        
+        # Download zip file from Google Drive
+        url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
+        output = MODEL_ZIP_NAME
+        
+        try:
+            gdown.download(url, output, quiet=False)
+            
+            # Extract zip file
+            with zipfile.ZipFile(output, 'r') as zip_ref:
+                zip_ref.extractall(MODEL_DIR)
+            
+            # Clean up zip file
+            os.remove(output)
+            
+            st.success("✅ Model downloaded and extracted successfully!")
+        except Exception as e:
+            st.error(f"❌ Failed to download model: {str(e)}")
+            raise
 
 @st.cache_resource
 def load_model():
+    # Ensure model is downloaded
+    download_model_from_drive()
+    
+    # Check if model files exist
+    required_files = ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']
+    if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
+        raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
+    
     processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
-    model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR, local_files_only=True)
+    model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
     model.eval()
     return processor, model
 
@@ -140,6 +178,14 @@ def detect_accent(audio_path: str):
 st.set_page_config(page_title="Accent Detection", layout="centered")
 st.title("🗣️ Accent Detection from Speech")
 st.markdown("Upload a video/audio file **or** enter a YouTube/public video URL.")
+
+# Show model download status
+with st.spinner("🔍 Checking for model files..."):
+    try:
+        download_model_from_drive()
+    except Exception as e:
+        st.error(f"Model initialization failed: {str(e)}")
+        st.stop()
 
 video_url = st.text_input("🔗 Enter a video URL (YouTube, Loom, etc.):")
 uploaded_file = st.file_uploader("📂 Or upload a video/audio file", type=["mp4", "mov", "mkv", "webm", "mp3", "wav"])
@@ -188,7 +234,6 @@ if st.button("🔍 Detect Accent"):
                         f"The model suggests the accent might be **{accent}**, but the **low confidence** ({confidence:.2f}%) means the result should be taken cautiously. "
                         "Background noise, unclear speech, or rare accents might affect prediction certainty."
                     )
-
 
             except AudioExtractionError as e:
                 st.error(f"⚠️ {str(e)}")
