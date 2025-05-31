@@ -102,7 +102,46 @@ def extract_audio(input_path: str, output_path: str) -> str:
             return convert_with_torchaudio(input_path, output_path)
     except Exception as e:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
+ # ====================== MODEL HANDLING =======================More actions
+def download_model_from_drive():
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        try:
+            url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
+            gdown.download(url, MODEL_ZIP_NAME, quiet=False)
+            with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
+                zip_ref.extractall(MODEL_DIR)
+            os.remove(MODEL_ZIP_NAME)
+        except Exception as e:
+            raise AudioExtractionError(f"Model download failed: {str(e)}")
 
+@st.cache_resource
+def load_model():
+    download_model_from_drive()
+    required_files = ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']
+    if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
+        raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
+    
+    processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
+    model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
+    model.eval()
+    return processor, model
+
+def detect_accent(audio_path: str):
+    processor, model = load_model()
+    waveform, sr = torchaudio.load(audio_path)
+    if sr != TARGET_SR:
+        waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+    inputs = processor(waveform.squeeze(), sampling_rate=TARGET_SR, return_tensors="pt")
+    with torch.no_grad():
+        logits = model(**inputs).logits
+        probs = torch.softmax(logits, dim=1)
+    pred_id = torch.argmax(probs).item()
+    confidence = float(probs[0, pred_id]) * 100
+    label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
+    return label, round(confidence, 2)
 # ====================== STREAMLIT UI ============================
 st.set_page_config(page_title="Accent Detection", layout="centered")
 st.title("🗣️ Accent Detection from Speech")
