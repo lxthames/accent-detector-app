@@ -16,9 +16,9 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 MODEL_DRIVE_ID = "19uA2hRO3aWUheXsQxXrda38QjKMCTiW1"
 MODEL_ZIP_NAME = "model.zip"
 MODEL_DIR = "./local_model"
-TARGET_SR = 16000  # Target sample rate (16kHz)
+TARGET_SR = 16000
 ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
-CHUNK_SIZE = 8192  # For streaming downloads
+CHUNK_SIZE = 8192
 MAX_RETRIES = 3
 DOWNLOAD_TIMEOUT = 30
 
@@ -33,7 +33,6 @@ class AudioExtractionError(Exception):
     pass
 
 def is_youtube_url(url: str) -> bool:
-    """Check if URL is from YouTube"""
     try:
         parsed = urlparse(url)
         return any(domain in parsed.netloc for domain in {
@@ -42,22 +41,16 @@ def is_youtube_url(url: str) -> bool:
     except Exception:
         return False
 
-def install_ffmpeg():
-    """Ensure FFmpeg is installed in the environment"""
+def check_ffmpeg():
+    """Check if FFmpeg is available without trying to install it"""
     try:
-        # Check if ffmpeg exists
         subprocess.run(['ffmpeg', '-version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return True
     except (subprocess.CalledProcessError, FileNotFoundError):
-        try:
-            # Install ffmpeg if missing
-            subprocess.run(['apt-get', 'update'], check=True)
-            subprocess.run(['apt-get', 'install', '-y', 'ffmpeg'], check=True)
-            st.success("FFmpeg installed successfully")
-        except Exception as e:
-            raise AudioExtractionError(f"Failed to install FFmpeg: {str(e)}")
+        return False
 
 def download_youtube_audio(url: str, output_path: str) -> str:
-    """Download audio from YouTube using yt-dlp with FFmpeg"""
+    """Download YouTube audio using yt-dlp with FFmpeg fallback"""
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -65,53 +58,37 @@ def download_youtube_audio(url: str, output_path: str) -> str:
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
-                'preferredquality': '192',
             }],
             'quiet': True,
-            'ffmpeg_location': '/usr/bin/ffmpeg',
             'retries': 3
         }
+        
+        # Streamlit Sharing has FFmpeg pre-installed at /usr/bin/ffmpeg
+        if os.path.exists('/usr/bin/ffmpeg'):
+            ydl_opts['ffmpeg_location'] = '/usr/bin/ffmpeg'
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
         return output_path
     except Exception as e:
         raise AudioExtractionError(f"YouTube download failed: {str(e)}")
 
-def download_direct_video(url: str, output_path: str) -> str:
-    """Download video from direct URL"""
-    try:
-        with requests.get(url, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
-            response.raise_for_status()
-            with open(output_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                    f.write(chunk)
-        return output_path
-    except Exception as e:
-        raise AudioExtractionError(f"Video download failed: {str(e)}")
-
 def convert_with_torchaudio(input_path: str, output_path: str) -> str:
     """Convert any audio file to WAV format using torchaudio"""
     try:
-        # Load audio file
         waveform, sr = torchaudio.load(input_path)
-        
-        # Resample if needed
         if sr != TARGET_SR:
             resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
             waveform = resampler(waveform)
-        
-        # Convert to mono if stereo
         if waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
-        
-        # Save as WAV
         torchaudio.save(output_path, waveform, TARGET_SR)
         return output_path
     except Exception as e:
         raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
 
 def extract_audio(input_path: str, output_path: str) -> str:
-    """Main function to handle all audio extraction scenarios"""
+    """Main audio extraction function with fallbacks"""
     try:
         # Handle YouTube URLs
         if input_path.startswith(('http://', 'https://')) and is_youtube_url(input_path):
@@ -120,7 +97,11 @@ def extract_audio(input_path: str, output_path: str) -> str:
         # Handle direct video URLs
         elif input_path.startswith(('http://', 'https://')):
             temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
-            download_direct_video(input_path, temp_video)
+            with requests.get(input_path, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
+                r.raise_for_status()
+                with open(temp_video, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                        f.write(chunk)
             return convert_with_torchaudio(temp_video, output_path)
         
         # Handle local files
@@ -149,12 +130,10 @@ def load_model():
     """Load the accent detection model"""
     download_model_from_drive()
     
-    # Verify all required files exist
     required_files = ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']
     if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
         raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
     
-    # Load processor and model
     processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
     model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
     model.eval()
@@ -164,20 +143,17 @@ def detect_accent(audio_path: str):
     """Run accent detection on audio file"""
     processor, model = load_model()
     
-    # Load and preprocess audio
     waveform, sr = torchaudio.load(audio_path)
     if sr != TARGET_SR:
         waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
     
-    # Get model predictions
     inputs = processor(waveform.squeeze(), sampling_rate=TARGET_SR, return_tensors="pt")
     with torch.no_grad():
         logits = model(**inputs).logits
         probs = torch.softmax(logits, dim=1)
     
-    # Return results
     pred_id = torch.argmax(probs).item()
     confidence = float(probs[0, pred_id]) * 100
     label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
@@ -189,16 +165,12 @@ def main():
     st.title("🗣️ Accent Detection from Speech")
     st.markdown("Upload a video/audio file or enter a YouTube URL to detect the speaker's accent.")
 
-    # Initialize FFmpeg
-    with st.spinner("Setting up audio processing..."):
-        try:
-            install_ffmpeg()
-        except Exception as e:
-            st.error(f"Initialization failed: {str(e)}")
-            st.stop()
+    # Check for FFmpeg (Streamlit Sharing has it pre-installed)
+    if not check_ffmpeg():
+        st.warning("FFmpeg is not available. YouTube downloads may not work properly.")
 
     # Check model files
-    with st.spinner("Checking model files..."):
+    with st.spinner("Loading model..."):
         try:
             download_model_from_drive()
         except Exception as e:
@@ -214,7 +186,7 @@ def main():
         if not video_url and not uploaded_file:
             st.warning("Please provide a URL or upload a file.")
         else:
-            with st.spinner("Processing..."):
+            with st.spinner("Processing audio..."):
                 try:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         output_wav = os.path.join(tmp_dir, "output.wav")
@@ -229,12 +201,10 @@ def main():
 
                         accent, confidence = detect_accent(output_wav)
                         
-                        # Display results
                         st.success("✅ Analysis complete!")
                         st.markdown(f"### Detected accent: **{accent}**")
                         st.markdown(f"**Confidence**: {confidence:.2f}%")
                         
-                        # Add interpretation
                         if confidence > 85:
                             st.info("High confidence in this prediction")
                         elif confidence > 60:
