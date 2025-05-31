@@ -55,7 +55,6 @@ def download_youtube_audio(url: str, output_path: str) -> str:
             'retries': 3
         }
         
-        # Streamlit Sharing has FFmpeg pre-installed at /usr/bin/ffmpeg
         if os.path.exists('/usr/bin/ffmpeg'):
             ydl_opts['ffmpeg_location'] = '/usr/bin/ffmpeg'
         
@@ -82,11 +81,8 @@ def convert_with_torchaudio(input_path: str, output_path: str) -> str:
 def extract_audio(input_path: str, output_path: str) -> str:
     """Main audio extraction function with fallbacks"""
     try:
-        # Handle YouTube URLs
         if input_path.startswith(('http://', 'https://')) and is_youtube_url(input_path):
             return download_youtube_audio(input_path, output_path)
-        
-        # Handle direct video URLs
         elif input_path.startswith(('http://', 'https://')):
             temp_video = os.path.join(tempfile.gettempdir(), "temp_video.mp4")
             with requests.get(input_path, stream=True, timeout=DOWNLOAD_TIMEOUT) as r:
@@ -95,41 +91,82 @@ def extract_audio(input_path: str, output_path: str) -> str:
                     for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
                         f.write(chunk)
             return convert_with_torchaudio(temp_video, output_path)
-        
-        # Handle local files
         else:
             return convert_with_torchaudio(input_path, output_path)
-            
     except Exception as e:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
 
 # ====================== MODEL HANDLING =======================
 def download_model_from_drive():
-    """Download and extract model from Google Drive"""
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        try:
-            url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
-            gdown.download(url, MODEL_ZIP_NAME, quiet=False)
-            with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
-                zip_ref.extractall(MODEL_DIR)
+    """Download and extract model from Google Drive with verification"""
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    
+    # Required model files (including the quantized model)
+    required_files = {
+        'config.json',
+        'preprocessor_config.json',
+        'pytorch_model_quantized.pt',  # Our quantized model file
+        'vocab.json',
+        'tokenizer_config.json'
+    }
+    
+    # Skip download if all files exist
+    if all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
+        return
+    
+    try:
+        # Download zip file
+        url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
+        gdown.download(url, MODEL_ZIP_NAME, quiet=False)
+        
+        # Extract and verify files
+        with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
+            zip_ref.extractall(MODEL_DIR)
+            
+        # Verify all required files were extracted
+        existing_files = set(os.listdir(MODEL_DIR))
+        missing_files = required_files - existing_files
+        if missing_files:
+            raise AudioExtractionError(
+                f"Missing model files: {missing_files}\n"
+                f"Found files: {existing_files}"
+            )
+            
+    except Exception as e:
+        raise AudioExtractionError(f"Model download failed: {str(e)}")
+    finally:
+        if os.path.exists(MODEL_ZIP_NAME):
             os.remove(MODEL_ZIP_NAME)
-        except Exception as e:
-            raise AudioExtractionError(f"Model download failed: {str(e)}")
 
 @st.cache_resource
 def load_model():
-    """Load the accent detection model"""
-    download_model_from_drive()
-    
-    required_files = ['config.json', 'preprocessor_config.json','tokenizer_config.json','vocab.json','pytorch_model_quantized.pt']
-    if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
-        raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
-    
-    processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
-    model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
-    model.eval()
-    return processor, model
+    """Load the quantized accent detection model"""
+    try:
+        download_model_from_drive()
+        
+        # Verify the quantized model exists
+        model_path = os.path.join(MODEL_DIR, 'pytorch_model_quantized.pt')
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Quantized model file not found at {model_path}\n"
+                f"Directory contents: {os.listdir(MODEL_DIR)}"
+            )
+            
+        # Load processor and config
+        processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
+        
+        # Load the quantized model
+        model = Wav2Vec2ForSequenceClassification.from_pretrained(
+            MODEL_DIR,
+            state_dict=torch.load(model_path, map_location='cpu')
+        )
+        model.eval()
+        return processor, model
+        
+    except Exception as e:
+        st.error(f"❌ Model loading failed: {str(e)}")
+        st.error(f"Please verify the model files in {MODEL_DIR}")
+        st.stop()
 
 def detect_accent(audio_path: str):
     """Run accent detection on audio file"""
@@ -155,53 +192,52 @@ def detect_accent(audio_path: str):
 def main():
     st.set_page_config(page_title="Accent Detection", layout="centered")
     st.title("🗣️ Accent Detection from Speech")
-    st.markdown("Upload a video/audio file or enter a YouTube URL to detect the speaker's accent.")
+    
+    # Initialize model early to catch errors
+    with st.spinner("Initializing model..."):
+        processor, model = load_model()
 
-    # Check model files
-    with st.spinner("Loading model..."):
-        try:
-            download_model_from_drive()
-        except Exception as e:
-            st.error(f"Model initialization failed: {str(e)}")
-            st.stop()
+    st.markdown("Upload a video/audio file or enter a YouTube URL")
 
-    # Input options
-    video_url = st.text_input("🔗 Enter a video URL (YouTube or direct link):")
-    uploaded_file = st.file_uploader("📂 Or upload a video/audio file", 
+    video_url = st.text_input("🔗 Enter YouTube URL:")
+    uploaded_file = st.file_uploader("📂 Or upload file", 
                                    type=["mp4", "mov", "mkv", "webm", "mp3", "wav"])
 
     if st.button("🔍 Detect Accent"):
         if not video_url and not uploaded_file:
-            st.warning("Please provide a URL or upload a file.")
+            st.warning("Please provide input")
         else:
-            with st.spinner("Processing audio..."):
+            with st.spinner("Processing..."):
                 try:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         output_wav = os.path.join(tmp_dir, "output.wav")
                         
                         if video_url:
-                            extract_audio(video_url, output_wav)
+                            if is_youtube_url(video_url):
+                                extract_audio(video_url, output_wav)
+                            else:
+                                raise AudioExtractionError("Only YouTube URLs supported")
                         else:
-                            temp_input = os.path.join(tmp_dir, uploaded_file.name)
-                            with open(temp_input, "wb") as f:
+                            temp_path = os.path.join(tmp_dir, uploaded_file.name)
+                            with open(temp_path, "wb") as f:
                                 f.write(uploaded_file.getbuffer())
-                            extract_audio(temp_input, output_wav)
+                            extract_audio(temp_path, output_wav)
 
                         accent, confidence = detect_accent(output_wav)
                         
-                        st.success("✅ Analysis complete!")
-                        st.markdown(f"### Detected accent: **{accent}**")
+                        st.success("✅ Analysis Complete")
+                        st.markdown(f"### Accent: **{accent}**")
                         st.markdown(f"**Confidence**: {confidence:.2f}%")
                         
                         if confidence > 85:
-                            st.info("High confidence in this prediction")
+                            st.info("High confidence prediction")
                         elif confidence > 60:
-                            st.info("Moderate confidence in this prediction")
+                            st.info("Moderate confidence prediction")
                         else:
-                            st.warning("Low confidence - results may be less accurate")
+                            st.warning("Low confidence result")
 
                 except AudioExtractionError as e:
-                    st.error(f"⚠️ Audio processing error: {str(e)}")
+                    st.error(f"⚠️ Processing error: {str(e)}")
                 except Exception as e:
                     st.error(f"❌ Unexpected error: {str(e)}")
 
