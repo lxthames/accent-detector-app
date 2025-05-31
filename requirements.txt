@@ -10,3 +10,5 @@ gdown
 numpy
 soundfile
 safetensors
+pyaudio
+
