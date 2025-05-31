@@ -1,25 +1,20 @@
 import os
-import subprocess
 import tempfile
 import requests
 import streamlit as st
 from urllib.parse import urlparse
-from typing import Optional
 import gdown
-import zipfile
-import yt_dlp
 import torchaudio
 import torch
 from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
+import yt_dlp
 
 # =========================== CONFIG ===========================
-MODEL_DRIVE_ID = "1miyNR7k89konH7_du1ORIhs8ZF8OniGv"
-MODEL_ZIP_NAME = "model.zip"
-MODEL_DIR = "./local_model"
+MODEL_DRIVE_ID = "1miyNR7k89konH7_du1ORIhs8ZF8OniGv"  # Only for model.safetensors
+MODEL_DIR = "./model"
+SAFETENSORS_FILE = "model.safetensors"
 TARGET_SR = 16000
-ALLOWED_VIDEO_FORMATS = {'.mp4', '.mov', '.mkv', '.webm'}
 CHUNK_SIZE = 8192
-MAX_RETRIES = 3
 DOWNLOAD_TIMEOUT = 30
 
 ID2LABEL = {
@@ -42,11 +37,10 @@ def is_youtube_url(url: str) -> bool:
         return False
 
 def download_youtube_audio(url: str, output_path: str) -> str:
-    """Download YouTube audio using yt-dlp with FFmpeg fallback"""
     try:
         ydl_opts = {
             'format': 'bestaudio/best',
-            'outtmpl': output_path.replace('.wav', ''),  # yt-dlp adds .wav by FFmpegExtractAudio
+            'outtmpl': output_path.replace('.wav', ''),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
@@ -60,18 +54,11 @@ def download_youtube_audio(url: str, output_path: str) -> str:
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        
-        # yt-dlp saves as output_path without extension + ".wav"
-        downloaded_file = output_path.replace('.wav', '') + ".wav"
-        if os.path.exists(downloaded_file):
-            return downloaded_file
-        else:
-            raise AudioExtractionError("YouTube audio download: output file not found")
+        return output_path
     except Exception as e:
         raise AudioExtractionError(f"YouTube download failed: {str(e)}")
 
 def convert_with_torchaudio(input_path: str, output_path: str) -> str:
-    """Convert any audio file to WAV format using torchaudio"""
     try:
         waveform, sr = torchaudio.load(input_path)
         if sr != TARGET_SR:
@@ -85,7 +72,6 @@ def convert_with_torchaudio(input_path: str, output_path: str) -> str:
         raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
 
 def extract_audio(input_path: str, output_path: str) -> str:
-    """Main audio extraction function with fallbacks"""
     try:
         if input_path.startswith(('http://', 'https://')) and is_youtube_url(input_path):
             return download_youtube_audio(input_path, output_path)
@@ -103,59 +89,20 @@ def extract_audio(input_path: str, output_path: str) -> str:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
 
 # ====================== MODEL HANDLING =======================
-def print_model_dir_files():
-    print(f"Files in {MODEL_DIR}:")
-    for root, dirs, files in os.walk(MODEL_DIR):
-        for file in files:
-            print(f"- {file}")
-
-def download_model_from_drive():
-    """Download and extract model files from Google Drive, flattening any subfolder structure."""
+def download_safetensors():
     os.makedirs(MODEL_DIR, exist_ok=True)
+    safetensors_path = os.path.join(MODEL_DIR, SAFETENSORS_FILE)
 
-    required_files = {
-        'config.json',
-        'preprocessor_config.json',
-        'model.safetensors',    # Make sure your model file matches this name or update here
-        'vocab.json',
-        'tokenizer_config.json'
-    }
-
-    if all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
-        print("✅ All model files already exist.")
-        print_model_dir_files()
+    if os.path.exists(safetensors_path):
+        print(f"✅ {SAFETENSORS_FILE} already exists.")
         return
 
-    try:
-        url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
-        print("⬇️ Downloading model zip from Google Drive...")
-        gdown.download(url, MODEL_ZIP_NAME, quiet=False)
+    url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
+    print(f"⬇️ Downloading {SAFETENSORS_FILE} from Google Drive...")
+    gdown.download(url, safetensors_path, quiet=False)
 
-        print("📦 Extracting and flattening model files...")
-        with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
-            extracted = set()
-            for zip_info in zip_ref.infolist():
-                basename = os.path.basename(zip_info.filename)
-                if basename in required_files and not zip_info.is_dir():
-                    target_path = os.path.join(MODEL_DIR, basename)
-                    with zip_ref.open(zip_info) as source, open(target_path, 'wb') as target:
-                        target.write(source.read())
-                    print(f"✅ Extracted: {basename}")
-                    extracted.add(basename)
-
-            missing = required_files - extracted
-            if missing:
-                raise AudioExtractionError(f"❌ Missing required model files after extraction: {missing}")
-
-        print_model_dir_files()
-
-    except Exception as e:
-        raise AudioExtractionError(f"❌ Failed to download or extract model: {str(e)}")
-
-    finally:
-        if os.path.exists(MODEL_ZIP_NAME):
-            os.remove(MODEL_ZIP_NAME)
-
+    if not os.path.exists(safetensors_path):
+        raise RuntimeError(f"Failed to download {SAFETENSORS_FILE}")
 
 @st.cache_resource
 def load_model():
@@ -180,33 +127,26 @@ def detect_accent(audio_path: str):
     label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
     return label, round(confidence, 2)
 
-
 # ====================== STREAMLIT UI ============================
 def main():
     st.set_page_config(page_title="Accent Detection", layout="centered")
     st.title("🗣️ Accent Detection from Speech")
-    
-    # Download model files before loading
-    with st.spinner("Downloading and preparing model..."):
-        try:
-            download_model_from_drive()
-        except AudioExtractionError as e:
-            st.error(f"❌ Model preparation error: {str(e)}")
-            return
 
-    # Initialize model early to catch errors
-    with st.spinner("Initializing model..."):
-        try:
+    try:
+        with st.spinner("Downloading model weights (if needed)..."):
+            download_safetensors()
+
+        with st.spinner("Loading model..."):
             processor, model = load_model()
-        except Exception as e:
-            st.error(f"❌ Model loading error: {str(e)}")
-            return
+    except Exception as e:
+        st.error(f"Model loading error: {e}")
+        return
 
     st.markdown("Upload a video/audio file or enter a YouTube URL")
 
     video_url = st.text_input("🔗 Enter YouTube URL:")
-    uploaded_file = st.file_uploader("📂 Or upload file", 
-                                   type=["mp4", "mov", "mkv", "webm", "mp3", "wav"])
+    uploaded_file = st.file_uploader("📂 Or upload file",
+                                     type=["mp4", "mov", "mkv", "webm", "mp3", "wav"])
 
     if st.button("🔍 Detect Accent"):
         if not video_url and not uploaded_file:
@@ -216,7 +156,7 @@ def main():
                 try:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         output_wav = os.path.join(tmp_dir, "output.wav")
-                        
+
                         if video_url:
                             if is_youtube_url(video_url):
                                 extract_audio(video_url, output_wav)
@@ -229,11 +169,11 @@ def main():
                             extract_audio(temp_path, output_wav)
 
                         accent, confidence = detect_accent(output_wav)
-                        
+
                         st.success("✅ Analysis Complete")
                         st.markdown(f"### Accent: **{accent}**")
                         st.markdown(f"**Confidence**: {confidence:.2f}%")
-                        
+
                         if confidence > 85:
                             st.info("High confidence prediction")
                         elif confidence > 60:
