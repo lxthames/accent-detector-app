@@ -41,14 +41,6 @@ def is_youtube_url(url: str) -> bool:
     except Exception:
         return False
 
-def check_ffmpeg():
-    """Check if FFmpeg is available without trying to install it"""
-    try:
-        subprocess.run(['ffmpeg', '-version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
 def download_youtube_audio(url: str, output_path: str) -> str:
     """Download YouTube audio using yt-dlp with FFmpeg fallback"""
     try:
@@ -164,10 +156,6 @@ def main():
     st.set_page_config(page_title="Accent Detection", layout="centered")
     st.title("🗣️ Accent Detection from Speech")
     st.markdown("Upload a video/audio file or enter a YouTube URL to detect the speaker's accent.")
-
-    # Check for FFmpeg (Streamlit Sharing has it pre-installed)
-    if not check_ffmpeg():
-        st.warning("FFmpeg is not available. YouTube downloads may not work properly.")
 
     # Check model files
     with st.spinner("Loading model..."):
