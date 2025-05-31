@@ -160,24 +160,21 @@ def load_model():
     return processor, model
 
 def detect_accent(audio_path: str):
-    """Run accent detection on audio file"""
     processor, model = load_model()
-    
     waveform, sr = torchaudio.load(audio_path)
     if sr != TARGET_SR:
         waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
-    
     inputs = processor(waveform.squeeze(), sampling_rate=TARGET_SR, return_tensors="pt")
     with torch.no_grad():
         logits = model(**inputs).logits
         probs = torch.softmax(logits, dim=1)
-    
     pred_id = torch.argmax(probs).item()
     confidence = float(probs[0, pred_id]) * 100
     label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
     return label, round(confidence, 2)
+
 
 # ====================== STREAMLIT UI ============================
 def main():
