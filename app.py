@@ -1,14 +1,23 @@
 import os
 import streamlit as st
 import gdown
+import torch
+import torchaudio
+
 from transformers import Wav2Vec2Processor, Wav2Vec2ForSequenceClassification
 
 # ======================= CONFIG =======================
 MODEL_DIR = "model"
-MODEL_DRIVE_ID = "15nCBxXFqMqr6YrvSn9FXhR_foBHcawMh"
+MODEL_DRIVE_ID = "1miyNR7k89konH7_du1ORIhs8ZF8OniGv"
 SAFETENSORS_FILE = "model.safetensors"
+TARGET_SR = 16000
 
-# Files that must be present in model directory beforehand
+ID2LABEL = {
+    0: "American", 1: "Australian", 2: "British", 3: "Canadian", 4: "English",
+    5: "Indian", 6: "Irish", 7: "NewZealand", 8: "NorthernIrish", 9: "Scottish",
+    10: "SouthAfrican", 11: "Unknown", 12: "Welsh"
+}
+
 REQUIRED_FILES = [
     "config.json",
     "preprocessor_config.json",
@@ -55,6 +64,7 @@ def list_model_files():
         size_kb = os.path.getsize(path) / 1024
         st.write(f"• `{f}` — {size_kb:.1f} KB")
 
+@st.cache_resource
 def load_model():
     try:
         processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
@@ -66,12 +76,38 @@ def load_model():
         st.error(f"❌ Model loading error: {e}")
         return None, None
 
+def detect_accent(audio_bytes, processor, model):
+    try:
+        # Load audio from bytes
+        with open("temp_input.wav", "wb") as f:
+            f.write(audio_bytes)
+
+        waveform, sr = torchaudio.load("temp_input.wav")
+
+        # Resample if needed
+        if sr != TARGET_SR:
+            waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
+
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+
+        inputs = processor(waveform.squeeze(), sampling_rate=TARGET_SR, return_tensors="pt")
+        with torch.no_grad():
+            logits = model(**inputs).logits
+            probs = torch.softmax(logits, dim=1)
+
+        pred_id = torch.argmax(probs).item()
+        confidence = float(probs[0, pred_id]) * 100
+        label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
+        return label, round(confidence, 2)
+    except Exception as e:
+        st.error(f"❌ Error during inference: {e}")
+        return None, None
+
 # ======================= STREAMLIT UI =======================
 def main():
-    st.set_page_config(page_title="Accent Model Manager", layout="centered")
-    st.title("🎛️ Accent Model Manager")
-
-    st.markdown("Use the buttons below to manage your local model setup.")
+    st.set_page_config(page_title="Accent Detection", layout="centered")
+    st.title("🗣️ Accent Detection from Audio")
 
     if st.button("⬇️ Download `model.safetensors`"):
         download_safetensors()
@@ -79,8 +115,25 @@ def main():
     if st.button("📁 List files in `model/` directory"):
         list_model_files()
 
+    processor = model = None
     if st.button("🚀 Load Model"):
-        load_model()
+        processor, model = load_model()
+
+    st.markdown("---")
+    st.markdown("### 🎧 Upload Audio File")
+    audio_file = st.file_uploader("Choose a WAV file", type=["wav"])
+
+    if audio_file and processor and model:
+        st.audio(audio_file, format="audio/wav")
+
+        if st.button("🔍 Detect Accent"):
+            with st.spinner("Processing..."):
+                label, confidence = detect_accent(audio_file.read(), processor, model)
+                if label:
+                    st.success(f"### Accent: **{label}**")
+                    st.markdown(f"**Confidence:** {confidence:.2f}%")
+    elif audio_file:
+        st.warning("Please load the model first!")
 
 if __name__ == "__main__":
     main()
