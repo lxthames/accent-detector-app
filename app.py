@@ -120,35 +120,28 @@ def download_model_from_drive():
         gdown.download(url, MODEL_ZIP_NAME, quiet=False)
 
         with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
-            print("📦 Contents of the ZIP file:")
-            for name in zip_ref.namelist():
-                print(" -", name)
+    print("📦 Contents of the ZIP file:")
+    for name in zip_ref.namelist():
+        print(" -", name)
 
-            found_files = set()
-            for zip_info in zip_ref.infolist():
-                filename = os.path.basename(zip_info.filename)
-                if filename in required_files and not zip_info.is_dir():
-                    # Extract to MODEL_DIR
-                    target_path = os.path.join(MODEL_DIR, filename)
-                    with zip_ref.open(zip_info.filename) as source, open(target_path, 'wb') as target:
-                        target.write(source.read())
-                    print(f"✅ Extracted: {filename}")
-                    found_files.add(filename)
+    found_files = set()
+    for zip_info in zip_ref.infolist():
+        filename = os.path.basename(zip_info.filename)
+        if filename in required_files and not zip_info.is_dir():
+            with zip_ref.open(zip_info.filename) as source:
+                target_path = os.path.join(MODEL_DIR, filename)
+                with open(target_path, 'wb') as target:
+                    target.write(source.read())
+            print(f"✅ Extracted: {filename}")
+            found_files.add(filename)
 
-        # Verify all required files were extracted
-        missing_files = required_files - found_files
-        if missing_files:
-            raise AudioExtractionError(
-                f"❌ Missing required files: {missing_files}\n"
-                f"✅ Found files: {found_files}"
-            )
+    missing_files = required_files - found_files
+    if missing_files:
+        raise AudioExtractionError(
+            f"❌ Missing required files: {missing_files}\n"
+            f"✅ Found files: {found_files}"
+        )
 
-    except Exception as e:
-        raise AudioExtractionError(f"❌ Model setup failed: {str(e)}")
-
-    finally:
-        if os.path.exists(MODEL_ZIP_NAME):
-            os.remove(MODEL_ZIP_NAME)
 
 
 
