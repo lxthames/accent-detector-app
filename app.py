@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import streamlit as st
 from urllib.parse import urlparse
@@ -39,37 +40,52 @@ def is_youtube_url(url: str) -> bool:
     except Exception:
         return False
 
+def install_ffmpeg():
+    """Install ffmpeg if not available"""
+    try:
+        subprocess.run(['ffmpeg', '-version'], check=True, capture_output=True)
+    except:
+        try:
+            subprocess.run(['apt-get', 'update'], check=True)
+            subprocess.run(['apt-get', 'install', '-y', 'ffmpeg'], check=True)
+        except Exception as e:
+            raise AudioExtractionError(f"Failed to install ffmpeg: {str(e)}")
+
 def download_youtube_audio(url: str, output_path: str) -> str:
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': output_path,
-        'quiet': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'wav',
-        }],
-        'retries': 3
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return ydl.prepare_filename(info).replace('.webm', '.wav').replace('.mp4', '.wav')
+    """Download YouTube audio using yt-dlp with ffmpeg fallback"""
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_path.replace('.wav', ''),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'wav',
+            }],
+            'quiet': True,
+            'ffmpeg_location': '/usr/bin/ffmpeg'
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        return output_path
+    except Exception as e:
+        raise AudioExtractionError(f"YouTube download failed: {str(e)}")
 
 def convert_with_torchaudio(input_path: str, output_path: str) -> str:
-    """Primary conversion using torchaudio"""
+    """Convert any audio to WAV using torchaudio"""
     try:
         waveform, sr = torchaudio.load(input_path)
         if sr != TARGET_SR:
             resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
             waveform = resampler(waveform)
-        if waveform.shape[0] > 1:  # Convert to mono if stereo
+        if waveform.shape[0] > 1:  # Convert to mono
             waveform = torch.mean(waveform, dim=0, keepdim=True)
         torchaudio.save(output_path, waveform, TARGET_SR)
         return output_path
     except Exception as e:
-        raise AudioExtractionError(f"Torchaudio conversion failed: {str(e)}")
+        raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
 
-def extract_audio_to_wav(input_path: str, output_path: str) -> str:
-    """Universal audio extraction"""
+def extract_audio(input_path: str, output_path: str) -> str:
+    """Main audio extraction function"""
     try:
         if input_path.startswith(('http://', 'https://')):
             if is_youtube_url(input_path):
@@ -86,47 +102,6 @@ def extract_audio_to_wav(input_path: str, output_path: str) -> str:
             return convert_with_torchaudio(input_path, output_path)
     except Exception as e:
         raise AudioExtractionError(f"Audio extraction failed: {str(e)}")
-
-# ====================== MODEL HANDLING =======================
-def download_model_from_drive():
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        try:
-            url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
-            gdown.download(url, MODEL_ZIP_NAME, quiet=False)
-            with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
-                zip_ref.extractall(MODEL_DIR)
-            os.remove(MODEL_ZIP_NAME)
-        except Exception as e:
-            raise AudioExtractionError(f"Model download failed: {str(e)}")
-
-@st.cache_resource
-def load_model():
-    download_model_from_drive()
-    required_files = ['config.json', 'preprocessor_config.json', 'pytorch_model.bin']
-    if not all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
-        raise FileNotFoundError(f"Required model files not found in {MODEL_DIR}")
-    
-    processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
-    model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
-    model.eval()
-    return processor, model
-
-def detect_accent(audio_path: str):
-    processor, model = load_model()
-    waveform, sr = torchaudio.load(audio_path)
-    if sr != TARGET_SR:
-        waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)(waveform)
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    inputs = processor(waveform.squeeze(), sampling_rate=TARGET_SR, return_tensors="pt")
-    with torch.no_grad():
-        logits = model(**inputs).logits
-        probs = torch.softmax(logits, dim=1)
-    pred_id = torch.argmax(probs).item()
-    confidence = float(probs[0, pred_id]) * 100
-    label = ID2LABEL.get(pred_id, f"Label_{pred_id}")
-    return label, round(confidence, 2)
 
 # ====================== STREAMLIT UI ============================
 st.set_page_config(page_title="Accent Detection", layout="centered")
