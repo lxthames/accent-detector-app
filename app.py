@@ -8,7 +8,7 @@ from typing import Optional
 import gdown  # Added for Google Drive download
 import zipfile  # Added for extracting zipped models
 
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 from pydub import AudioSegment
 import yt_dlp
 import torchaudio
