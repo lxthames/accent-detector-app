@@ -75,30 +75,38 @@ def download_direct_video(url: str, output_path: str) -> str:
     return output_path
 
 def convert_to_wav(input_path: str, output_path: str) -> str:
-    """Robust audio conversion with multiple fallbacks"""
+    """Robust audio conversion with proper error handling"""
     try:
-        # First try librosa (works for most formats)
-        y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True)
-        sf.write(output_path, y, TARGET_SR)
-        return output_path
-    except Exception as librosa_error:
+        # Try with librosa using soundfile first
         try:
-            # Fallback to torchaudio if librosa fails
-            waveform, sr = torchaudio.load(input_path)
-            if sr != TARGET_SR:
-                resampler = torchaudio.transforms.Resample(sr, TARGET_SR)
-                waveform = resampler(waveform)
-            if waveform.shape[0] > 1:  # Convert to mono if stereo
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-            torchaudio.save(output_path, waveform, TARGET_SR)
+            y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True)
+            sf.write(output_path, y, TARGET_SR)
             return output_path
-        except Exception as torch_error:
-            raise AudioExtractionError(
-                f"All conversion attempts failed:\n"
-                f"Librosa error: {str(librosa_error)}\n"
-                f"Torchaudio error: {str(torch_error)}"
-            )
-
+        except Exception as e:
+            st.warning(f"Primary conversion failed, trying fallback methods: {str(e)}")
+            
+            # Fallback 1: Try with librosa using audioread explicitly
+            try:
+                y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True, res_type='kaiser_fast')
+                sf.write(output_path, y, TARGET_SR)
+                return output_path
+            except Exception as e:
+                st.warning(f"Audioread fallback failed: {str(e)}")
+                
+                # Fallback 2: Use torchaudio as final resort
+                try:
+                    waveform, sr = torchaudio.load(input_path)
+                    if sr != TARGET_SR:
+                        waveform = torchaudio.transforms.Resample(sr, TARGET_SR)(waveform)
+                    if waveform.shape[0] > 1:  # Convert to mono if stereo
+                        waveform = torch.mean(waveform, dim=0, keepdim=True)
+                    torchaudio.save(output_path, waveform, TARGET_SR)
+                    return output_path
+                except Exception as e:
+                    raise AudioExtractionError(f"All conversion methods failed. Last error: {str(e)}")
+                    
+    except Exception as e:
+        raise AudioExtractionError(f"Audio conversion failed: {str(e)}")
 def extract_audio_to_wav(input_path: str, output_path: str) -> str:
     """Universal audio extraction that handles both local and remote files"""
     try:
