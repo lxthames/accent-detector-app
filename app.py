@@ -104,7 +104,7 @@ def download_model_from_drive():
     required_files = {
         'config.json',
         'preprocessor_config.json', 
-        'pytorch_model_quantized.pt',
+        'model.safetensors',
         'vocab.json',
         'tokenizer_config.json'
     }
@@ -154,36 +154,10 @@ def download_model_from_drive():
 
 @st.cache_resource 
 def load_model():
-    """Load model with clear error reporting"""
-    try:
-        download_model_from_drive()
-        
-        # Verify quantized model exists
-        model_path = os.path.join(MODEL_DIR, 'pytorch_model_quantized.pt')
-        if not os.path.exists(model_path):
-            available_files = "\n- ".join(os.listdir(MODEL_DIR))
-            raise FileNotFoundError(
-                f"Quantized model not found at {model_path}\n"
-                f"Files in directory:\n- {available_files}"
-            )
-            
-        # Load processor and config
-        processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
-        
-        # Load quantized model
-        model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
-
-        model.eval()
-        return processor, model
-        
-    except Exception as e:
-        st.error("❌ Failed to load model")
-        st.error(f"Error: {str(e)}")
-        st.error("Please verify the zip file contains a 'model' folder with:")
-        st.error("- config.json\n- preprocessor_config.json")
-        st.error("- pytorch_model_quantized.pt\n- vocab.json")
-        st.error("- tokenizer_config.json")
-        st.stop()
+    processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
+    model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR, local_files_only=True)
+    model.eval()
+    return processor, model
 
 def detect_accent(audio_path: str):
     """Run accent detection on audio file"""
