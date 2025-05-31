@@ -98,7 +98,7 @@ def extract_audio(input_path: str, output_path: str) -> str:
 
 # ====================== MODEL HANDLING =======================
 def download_model_from_drive():
-    """Download and extract model files from Google Drive, handling nested folders."""
+    """Download and extract model files from Google Drive, flattening any subfolder structure."""
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     required_files = {
@@ -109,45 +109,38 @@ def download_model_from_drive():
         'tokenizer_config.json'
     }
 
-    # Skip download if all required files already exist
     if all(os.path.exists(os.path.join(MODEL_DIR, f)) for f in required_files):
-        print("✅ All model files already exist in MODEL_DIR.")
+        print("✅ All model files already exist.")
         return
 
     try:
-        # Download model zip from Google Drive
         url = f"https://drive.google.com/uc?id={MODEL_DRIVE_ID}"
-        print("⬇️ Downloading model from Google Drive...")
+        print("⬇️ Downloading model zip from Google Drive...")
         gdown.download(url, MODEL_ZIP_NAME, quiet=False)
 
-        # Extract required files regardless of nesting
-        print("📦 Extracting model files...")
+        print("📦 Extracting and flattening model files...")
         with zipfile.ZipFile(MODEL_ZIP_NAME, 'r') as zip_ref:
-            found_files = set()
+            extracted = set()
             for zip_info in zip_ref.infolist():
-                filename = os.path.basename(zip_info.filename)
-                if filename in required_files and not zip_info.is_dir():
-                    target_path = os.path.join(MODEL_DIR, filename)
-                    with zip_ref.open(zip_info.filename) as source, open(target_path, 'wb') as target:
+                basename = os.path.basename(zip_info.filename)
+                if basename in required_files and not zip_info.is_dir():
+                    target_path = os.path.join(MODEL_DIR, basename)
+                    with zip_ref.open(zip_info) as source, open(target_path, 'wb') as target:
                         target.write(source.read())
-                    print(f"✅ Extracted: {filename}")
-                    found_files.add(filename)
+                    print(f"✅ Extracted: {basename}")
+                    extracted.add(basename)
 
-            # Check if any required files are missing
-            missing_files = required_files - found_files
-            if missing_files:
-                raise AudioExtractionError(
-                    f"❌ Missing required files: {missing_files}\n"
-                    f"✅ Found files: {found_files}"
-                )
+            missing = required_files - extracted
+            if missing:
+                raise AudioExtractionError(f"❌ Missing required model files after extraction: {missing}")
 
     except Exception as e:
-        raise AudioExtractionError(f"❌ Model setup failed: {str(e)}")
+        raise AudioExtractionError(f"❌ Failed to download or extract model: {str(e)}")
 
     finally:
-        # Clean up the downloaded zip file
         if os.path.exists(MODEL_ZIP_NAME):
             os.remove(MODEL_ZIP_NAME)
+
 
 
 
