@@ -171,10 +171,8 @@ def load_model():
         processor = Wav2Vec2Processor.from_pretrained(MODEL_DIR)
         
         # Load quantized model
-        model = Wav2Vec2ForSequenceClassification.from_pretrained(
-            MODEL_DIR,
-            state_dict=torch.load(model_path, map_location='cpu')
-        )
+        model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_DIR)
+
         model.eval()
         return processor, model
         
