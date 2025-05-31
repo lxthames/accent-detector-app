@@ -1,3 +1,4 @@
+%%writefile app.py
 import os
 import time
 import requests
@@ -89,22 +90,23 @@ def download_with_retry(url: str, output_path: str, is_youtube: bool) -> str:
     raise AudioExtractionError("Failed to download video after multiple retries.")
 
 def convert_to_wav(input_path: str, output_path: str) -> str:
-    import librosa
-    import soundfile as sf
-    
-    # Load audio and resample to target SR
-    y, sr = librosa.load(input_path, sr=TARGET_SR, mono=True)
-    sf.write(output_path, y, TARGET_SR)
+    if input_path.lower().endswith('.mp3'):
+        audio = AudioSegment.from_mp3(input_path)
+    else:
+        audio = AudioSegment.from_file(input_path)
+    audio = audio.set_frame_rate(TARGET_SR).set_channels(1)
+    audio.export(output_path, format="wav")
     return output_path
 
 def extract_audio_to_wav(video_path: str, wav_output_path: str) -> str:
-    import moviepy as mp
-    
-    # Extract audio using moviepy
-    clip = mp.VideoFileClip(video_path)
-    clip.audio.write_audiofile(wav_output_path, verbose=False, logger=None)
-    clip.close()
-    return wav_output_path
+    try:
+        return convert_to_wav(video_path, wav_output_path)
+    except:
+        temp_audio_path = f"{os.path.splitext(video_path)[0]}_temp.mp3"
+        video = VideoFileClip(video_path)
+        video.audio.write_audiofile(temp_audio_path, verbose=False, logger=None)
+        video.close()
+        return convert_to_wav(temp_audio_path, wav_output_path)
 
 def extract_audio_from_video_url(video_url: str, wav_output_path: str, temp_dir: Optional[str] = None) -> str:
     if not wav_output_path.lower().endswith('.wav'):
