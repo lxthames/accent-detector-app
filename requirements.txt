@@ -9,3 +9,6 @@ requests
 gdown
 safetensors
 audioop-lts
+librosa
+soundfile
+ffmpeg-python
